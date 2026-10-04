@@ -1,0 +1,17 @@
+# 运行期依赖 — 精确锁定（2026-08 实测通过组合）
+# 变更依赖时：先改这里跑通测试，再更新本文件版本号。
+# 若需迁移到更高版本，请全量跑 pytest 与手动流式验证后再锁。
+
+langgraph==1.2.11
+langchain-openai==1.6.0
+langchain-core==1.6.0
+python-dotenv==1.2.3
+fastapi==0.141.1
+uvicorn==0.52.4
+sse-starlette==3.4.8
+aiosqlite==0.22.1
+numpy==2.5.2
+
+# MCP 工具面（把代码检索 / 白名单测试执行暴露给 Agent 自主调用）—— 2026-10-04 加入
+# 只在 `python -m mcp_server` 这条链路上用到，API 与测试都不依赖它。
+fastmcp==4.0.10

@@ -1,0 +1,6 @@
+# 开发/测试依赖 — 供本地与 CI 使用
+# 安装：pip install -r requirements.txt -r requirements-dev.txt
+pytest==9.1.1
+pytest-asyncio==1.4.0
+# 可选：markdown 渲染 / OpenAPI 文档生成（仅文档构建需要）
+markdown==3.9.0

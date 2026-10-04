@@ -1,0 +1,56 @@
+# 环境变量 — 包含 API Key，绝对不能提交
+.env
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.pytest-tmp*/
+.pytest-run-*/
+.pytest-runtime/
+# 验证脚本的临时运行目录（每轮验证会新建不同后缀，避免反复污染工作区）
+.cf-tmp*/
+
+# 备份文件（手动留档的旧版本，单文件散落不利于阅读）
+*.bak*
+
+# 测试残留
+.test-verify-output.txt
+*.db
+*.log
+chroma_db/
+.venv/
+venv/
+
+# Node
+node_modules/
+dist/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude/
+.agents/
+skills-lock.json
+
+# TypeScript build artifacts
+*.tsbuildinfo
+
+# WorkBuddy 工作记忆 — 不公开
+.workbuddy/
+
+# 演示视频（体积大，用外链，不进 git）
+*.mp4
+
+# 私有笔记（求职、面试稿、复盘、计划）—— 只留本地，不进仓库
+docs/
+# 本地 AI 编码工具自建目录
+.zcode/
