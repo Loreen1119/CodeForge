@@ -57,3 +57,6 @@ docs/
 
 # 评测用的上游仓库检出（pytest / requests / fastapi，3643 文件）——非本仓代码
 repos/
+
+# 评测工具链与逐条数据——含本机绝对路径 / 评测集答案 / 模型原始输出，不进公开仓
+scripts/benchmark/
