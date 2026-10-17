@@ -9,7 +9,7 @@ from schemas import RepositoryCreate, RepositoryResponse, RepositoryStatusRespon
 from repository_service import RepositoryValidationError, inspect_repository
 from code_search import read_code, search_repository
 from patch_service import validate_patch
-from task_service import create_repository,list_repositories,get_repository,create_task_record,get_task,list_tasks,update_task,request_reanalysis,supersede_for_reanalysis,create_plan,create_patch,get_current_plan,get_plan,get_patch,update_patch,decide_plan,append_event,list_events,schedule_task,shutdown_unfinished_tasks,create_test_run,list_test_runs,transition_task,schedule_generation,validate_and_create_patch,recover_zombie_tasks,load_template_params
+from task_service import create_repository,list_repositories,get_repository,create_task_record,get_task,list_tasks,update_task,request_reanalysis,supersede_for_reanalysis,create_plan,create_patch,get_current_plan,get_plan,get_patch,update_patch,decide_plan,append_event,list_events,schedule_task,shutdown_unfinished_tasks,create_test_run,list_test_runs,transition_task,schedule_generation,validate_and_create_patch,recover_zombie_tasks,load_template_params,effective_max_changed_lines
 from worktree_service import create_worktree, apply_patch, remove_worktree, worktree_path, WorktreeError
 from test_runner import syntax_check, run_allowlisted
 from constants import SSE_CLOSE_STATES, AWAITING_PLAN_APPROVAL, NEEDS_CONTEXT, PENDING, GENERATING_PATCH, AWAITING_PATCH_GENERATION_RETRY, AWAITING_PATCH_APPROVAL, RUNNING, CANCELLED, PATCH_APPLY_FAILED, APPLY_FAILURE_WORKTREE_CREATE_FAILED, APPLY_FAILURE_GIT_APPLY_FAILED, APPLY_FAILURE_SYNTAX_FAILED, APPLY_FAILURE_BASE_COMMIT_CHANGED
@@ -233,7 +233,7 @@ async def validate_task_patch(task_id:int, req:PatchValidateRequest):
         # 模板的 max_changed_lines 也必须在这条手动提交路径上生效，否则模板收窄的
         # 行数限制可以被绕过（自动生成走模板、手动提交走默认 50）。
         params=load_template_params(row)
-        patch_id, check, valid = await validate_and_create_patch(task_id, row['attempt_number'], req.diff, plan['id'], plan['base_commit'], plan_json, info['git_root'], roots, max_changed_lines=params.get('max_changed_lines', 50))
+        patch_id, check, valid = await validate_and_create_patch(task_id, row['attempt_number'], req.diff, plan['id'], plan['base_commit'], plan_json, info['git_root'], roots, max_changed_lines=effective_max_changed_lines(params))
         await append_event(task_id,'PATCH_VALIDATED',{'type':'PATCH_VALIDATED','patch_id':patch_id,'check':check.model_dump()},'Patch 安全检查完成，等待人工确认','patch_agent')
         saved=await get_patch(patch_id)
         if not valid:

@@ -7,7 +7,7 @@ import aiosqlite
 from db import DB_PATH
 from agent_graph import AgentState, run_code_search_node, run_plan_node, run_plan_review_node, run_requirement_node
 from repository_service import inspect_repository
-from patch_service import validate_patch
+from patch_service import DEFAULT_MAX_CHANGED_LINES, validate_patch
 from patch_generator import generate_patch, FakePatchGenerator, LLMPatchGenerator
 from template_service import parse_params
 from constants import AWAITING_PLAN_APPROVAL, NEEDS_CONTEXT, RUNNING, PENDING, FAILED, GENERATING_PATCH, AWAITING_PATCH_GENERATION_RETRY, AWAITING_PATCH_APPROVAL
@@ -358,7 +358,29 @@ async def transition_patch(patch_id: int, apply_status: str, *,
     finally:
         await c.close()
 
-async def validate_and_create_patch(task_id: int, attempt_number: int, diff: str, plan_id: int, base_commit: str | None, plan_json: dict, git_root: str, allowed_roots: list[str], max_changed_lines: int = 50) -> tuple:
+# 评测档位：Plan 范围一致性默认开启（产品原行为），显式设 0 才关闭。
+# 关闭的动机只可能是评测——真实 issue 的修复文件常常不落在「由 issue 正文推出的方案范围」内。
+ENFORCE_PLAN_SCOPE = os.environ.get("CODEFORGE_ENFORCE_PLAN_SCOPE", "1").strip().lower() not in ("0", "false", "no")
+
+# 评测档位：变更行数上限。产品路径不读它 —— 未显式设 env 时唯一来源仍是模板快照
+# （模板「只能收窄、硬上限 50」的不变量由 TemplateParams 契约把守，这里不越权）。
+# 只有真实 issue 评测会显式设大（如 400），因为上游 PR 的改动规模普遍超过 50 行；
+# 若不显式覆盖，模板里恒存在的 max_changed_lines 会把 env 值吃掉，变成"设了也没生效"。
+ENV_MAX_CHANGED_LINES = (
+    int(os.environ["CODEFORGE_MAX_CHANGED_LINES"])
+    if os.environ.get("CODEFORGE_MAX_CHANGED_LINES", "").strip()
+    else None
+)
+
+
+def effective_max_changed_lines(params: dict) -> int:
+    """评测档优先；未显式设 env 时保持「模板只能收窄」的原语义。"""
+    if ENV_MAX_CHANGED_LINES is not None:
+        return ENV_MAX_CHANGED_LINES
+    return params.get("max_changed_lines", DEFAULT_MAX_CHANGED_LINES)
+
+
+async def validate_and_create_patch(task_id: int, attempt_number: int, diff: str, plan_id: int, base_commit: str | None, plan_json: dict, git_root: str, allowed_roots: list[str], max_changed_lines: int = DEFAULT_MAX_CHANGED_LINES) -> tuple:
     """Validate patch, check scope, and create patch record. Returns (patch_id, check, valid).
 
     base_commit 必须由调用方从 plans 表的列传入（plan['base_commit']）——
@@ -368,7 +390,7 @@ async def validate_and_create_patch(task_id: int, attempt_number: int, diff: str
     50 行硬上限已在 TemplateParams 契约层卡死，这里不做任何放宽）。
     """
     check = validate_patch(diff, git_root, allowed_roots, max_changed_lines=max_changed_lines)
-    if check.valid and not set(check.changed_files).issubset({item['path'] for item in plan_json['proposed_changes']}):
+    if ENFORCE_PLAN_SCOPE and check.valid and not set(check.changed_files).issubset({item['path'] for item in plan_json['proposed_changes']}):
         check.valid = False
         check.findings.append('Patch 文件不属于已确认 Plan 的修改范围')
         check.risk_level = 'high'
@@ -471,7 +493,7 @@ async def run_generate_patch(task_id: int) -> None:
                 'resolved_branch': resolved_branch,
                 'model': template_model if resolved_branch == 'llm' else None,
                 'max_retries': template_retries if resolved_branch == 'llm' else None,
-                'max_changed_lines': params.get('max_changed_lines', 50)
+                'max_changed_lines': effective_max_changed_lines(params)
             }
         await append_event(
             task_id,
@@ -494,7 +516,7 @@ async def run_generate_patch(task_id: int) -> None:
             plan_json,
             info['git_root'],
             roots,
-            max_changed_lines=params.get('max_changed_lines', 50)
+            max_changed_lines=effective_max_changed_lines(params)
         )
 
         if valid:
@@ -514,6 +536,7 @@ async def run_generate_patch(task_id: int) -> None:
                     'validation': check.model_dump(),
                     'prompt_digest': result.prompt_digest,
                     'response_digest': result.response_digest,
+                    'risk_notes': result.risk_notes,
                     'patch_id': patch_id
                 },
                 message='Patch generated and ready for review',
@@ -532,6 +555,7 @@ async def run_generate_patch(task_id: int) -> None:
                     'plan_id': plan['id'],
                     'analysis_attempt': task_row['attempt_number'],
                     'findings': check.findings,
+                    'risk_notes': result.risk_notes,
                     'patch_id': patch_id
                 },
                 message='Patch generation failed, awaiting retry decision',

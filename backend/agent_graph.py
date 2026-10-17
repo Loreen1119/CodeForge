@@ -73,8 +73,43 @@ class AgentState(TypedDict, total=False):
     template_params: dict
 
 
-_STOP_WORDS = {"the", "and", "for", "with", "this", "that", "please", "修复", "增加", "优化", "一个", "功能", "问题", "代码", "任务"}
+_STOP_WORDS = {
+    "the", "and", "for", "with", "this", "that", "please", "修复", "增加", "优化", "一个", "功能", "问题", "代码", "任务",
+    # 英文 / 通用词：两字符就够长的也会被 _TOKEN_RE 收进来，占满检索预算却零区分度。
+    # 依据：离线实验（.cf-tmp-bench/exp_query.py）只剔这批词 + 标识符重排，未命中 10 条里救回 3 条。
+    "a", "an", "is", "are", "was", "were", "be", "been", "to", "of", "in", "on", "or", "not", "no", "without",
+    "when", "while", "if", "then", "than", "it", "its", "as", "at", "by", "from", "into", "over", "after", "before", "up",
+    "test", "tests", "testing", "issue", "pr", "fix", "fixes", "fixed", "bug", "error", "errors",
+    "should", "would", "could", "can", "may", "must", "allow", "allows", "use", "uses", "using",
+    "get", "set", "make", "made", "add", "added", "adds", "new", "now", "only", "also", "but",
+    "thanks", "thank", "see", "like", "one", "two", "all", "any", "some", "more", "most",
+    # 精确匹配，所以 test_mark / allow_host 这类完整 token 不会被误伤。mark / config / telemetry 故意不收：
+    # 它们是文件名级别的信号（13073 的 mark/structures.py、16470 的 telemetry/_asgi.py）。
+    "list", "lists",
+    # issues.json 无关联 issue 的 body 曾被加过一行说明，这几个中文串是它的残留 token。
+    "上游未关联独立", "问题描述取自", "标题", "描述",
+}
 _TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{1,}|[\u4e00-\u9fff]{2,}")
+
+
+def _identifier_score(token: str) -> int:
+    """词形打分：越像源码标识符越该排在前面。
+
+    必须在 casefold() 之前算 —— camelCase 的信息只在原 token 上存在
+    （consoleOutputStyle → consoleoutputstyle 之后就看不出驼峰了）。
+    """
+    score = 0
+    if "_" in token:
+        score += 3
+    if re.search(r"[A-Z]", token[1:]):
+        score += 3
+    if len(token) >= 8:
+        score += 2
+    if len(token) >= 12:
+        score += 2
+    if token.islower() and len(token) <= 4:
+        score -= 2
+    return score
 
 
 def _task_type(text: str) -> str:
@@ -101,11 +136,18 @@ def analyze_requirement(issue_title: str, issue_body: str, params: dict | None =
     template_keywords = [word for word in p.get("keywords", []) if word]
     keywords: list[str] = list(template_keywords)
     seen_keywords = {word.casefold() for word in template_keywords}
+    extracted: list[tuple[int, str]] = []
     for token in _TOKEN_RE.findall(text):
         normalized = token.casefold()
-        if normalized not in _STOP_WORDS and normalized not in seen_keywords:
-            keywords.append(normalized)
-            seen_keywords.add(normalized)
+        if normalized in _STOP_WORDS or normalized in seen_keywords:
+            continue
+        seen_keywords.add(normalized)
+        # 打分用原 token（要驼峰），存储用 casefold 后的值
+        extracted.append((_identifier_score(token), normalized))
+    # 标识符优先：分数高的先占预算，同分长的优先，再同分保持原文出现顺序（sort 稳定）。
+    # 模板词已固定在 keywords 头部，不参与排序。
+    extracted.sort(key=lambda item: (-item[0], -len(item[1])))
+    keywords.extend(word for _, word in extracted)
     template_criteria = [item for item in p.get("acceptance_criteria", []) if item]
     extracted_criteria = [part.strip(" -:：") for part in re.split(r"[\n。；;]+", issue_body) if part.strip(" -:：")]
     criteria = template_criteria + [item for item in extracted_criteria if item not in template_criteria]
@@ -218,10 +260,17 @@ def run_code_search_node(state: AgentState, repository_root: str, allowed_source
                     seen.add(key); contexts.append(CodeContext.model_validate(item))
         trace.append({"strategy":"path_tokens","hits":len(contexts),"tokens":path_tokens})
     if not contexts:
-        rag = search_with_fallback(repository_root, " ".join(candidates), allowed_source_roots=allowed_source_roots, max_results=8)
-        rag_results = list(rag)
-        contexts = [CodeContext.model_validate(x) for x in rag_results]
-        trace.append({"strategy":"rag","status":rag.status,"hits":len(contexts)})
+        rag_query = " ".join(candidates).strip()
+        if not rag_query:
+            # 关键词全被停用词表过滤掉时（issue 正文只有 "fix bug" 这类通用词），
+            # 空 query 会被 search_repository 直接拒绝（ValueError）—— 那会让任务崩掉，
+            # 而正确行为是「检索无结果」→ 由 plan 判 needs_context。
+            trace.append({"strategy": "rag", "status": "skipped_empty_query", "hits": 0})
+        else:
+            rag = search_with_fallback(repository_root, rag_query, allowed_source_roots=allowed_source_roots, max_results=8)
+            rag_results = list(rag)
+            contexts = [CodeContext.model_validate(x) for x in rag_results]
+            trace.append({"strategy":"rag","status":rag.status,"hits":len(contexts)})
     if not contexts: trace.append({"strategy":"blocked","hits":0})
     state["code_context"] = contexts
     state["search_trace"] = trace

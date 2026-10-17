@@ -1,9 +1,16 @@
 """Safety checks for proposed unified diffs; this module never writes files."""
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from pydantic import BaseModel, Field
+
+# 「版本基线护栏」的可调档位：默认值与产品原行为逐字一致（单文件 / 50 行），
+# 只有显式设置环境变量才放宽。评测要跑真实 issue（上游 PR 平均改动 3.3 文件），
+# 默认档结构性跑不通，故允许覆盖；覆盖事实必须写进 BENCHMARK.md 的「评测配置」。
+MAX_FILES_PER_PATCH = int(os.environ.get("CODEFORGE_MAX_FILES_PER_PATCH", "1"))
+DEFAULT_MAX_CHANGED_LINES = int(os.environ.get("CODEFORGE_MAX_CHANGED_LINES", "50"))
 
 
 class PatchCheck(BaseModel):
@@ -27,7 +34,7 @@ def _diff_path(value: str) -> str:
     return value.split("\t", 1)[0].strip()
 
 
-def validate_patch(diff: str, repository_root: str, allowed_source_roots: list[str] | None = None, max_changed_lines: int = 50) -> PatchCheck:
+def validate_patch(diff: str, repository_root: str, allowed_source_roots: list[str] | None = None, max_changed_lines: int = DEFAULT_MAX_CHANGED_LINES) -> PatchCheck:
     findings: list[str] = []
     files: list[str] = []
     old_files: list[str] = []
@@ -85,8 +92,9 @@ def validate_patch(diff: str, repository_root: str, allowed_source_roots: list[s
     changed_lines = additions + deletions
     if old_files and old_files != files:
         findings.append("Diff 的 --- 与 +++ 文件路径不一致")
-    if len(files) != 1:
-        findings.append("首版 Patch 只能修改单个文件")
+    if not files or len(files) > MAX_FILES_PER_PATCH:
+        findings.append("首版 Patch 只能修改单个文件" if MAX_FILES_PER_PATCH == 1 else
+                        f"首版 Patch 最多修改 {MAX_FILES_PER_PATCH} 个文件（当前 {len(files)} 个）")
     if changed_lines > max_changed_lines:
         findings.append(f"变更行数超过 {max_changed_lines} 行限制")
     risk = "high" if findings else ("medium" if changed_lines > 20 else "low")

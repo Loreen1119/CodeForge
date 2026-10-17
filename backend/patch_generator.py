@@ -210,10 +210,15 @@ def _build_user_prompt(ctx: PatchGenerationContext, retry_reason: str | None = N
 def _extract_diff(text: str) -> str:
     """Pull a usable unified diff out of an LLM response, or return ''."""
     t = (text or '').strip()
-    # strip a single surrounding markdown code fence if present
-    if t.startswith('```'):
-        t = re.sub(r'^```[a-zA-Z]*\n', '', t)
-        t = re.sub(r'\n```$', '', t).strip()
+    # 围栏剥离：模型常把「每个文件」各包一个代码块（而不是整份 diff 包一个），
+    # 只剥最外层会留下内部的 ``` 行 —— 而 ``` 不是合法 diff 行，git apply 直接报
+    # `corrupt patch`（实测 13073）。所以删掉所有「顶格」围栏行。
+    # 只认顶格：diff 的上下文/增删行必定带 ' ' / '+' / '-' 前缀，带前缀的 ``` 是
+    # 被改文件里的真实内容（如文档字符串中的代码块），不能动。
+    t = "\n".join(
+        line for line in t.splitlines()
+        if not re.fullmatch(r"```[A-Za-z0-9_+.\-]*", line)
+    ).strip()
     for marker in ('diff --git', '--- '):
         idx = t.find(marker)
         if idx != -1:
