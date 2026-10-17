@@ -102,8 +102,13 @@ def apply_patch(worktree: Path, diff: str) -> str:
             errors.append(err)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise WorktreeError("Patch 应用失败") from exc
-    # 抛最保守档的错误：它最贴近补丁本身的毛病，诊断价值高于最宽松档的报错
-    raise WorktreeError(errors[0] if errors else "Patch 无法应用")
+    # 抛最保守档的错误：它最贴近补丁本身的毛病，诊断价值高于最宽松档的报错。
+    # 但 git 的原始 stderr 对「模型重写补丁」有用（比如 `patch failed: src/x.py:1` 会指出
+    # 到底哪一行对不上），所以把四档的 stderr 全部带在异常 args 里，让调用方（PATCH_APPLY_FAILED
+    # 事件的 detail 字段）能拿回喂给模型重试。主消息仍是 errors[0]，不破坏既有 `str(exc)` 语义。
+    if errors:
+        raise WorktreeError(errors[0], {"git_stderr_by_mode": dict(zip((m for _, m in modes), errors))})
+    raise WorktreeError("Patch 无法应用")
 
 
 def remove_worktree(repository_root: str, task_id: int) -> None:

@@ -304,6 +304,9 @@ async def apply_task_patch(task_id:int, patch_id:int):
         if git_root is not None: remove_worktree(git_root, task_id)
         reason=(APPLY_FAILURE_WORKTREE_CREATE_FAILED if git_root is None
                 else APPLY_FAILURE_GIT_APPLY_FAILED)
+        # apply_patch 会把四档降级链的 git 原始 stderr 附在异常第二个参数里，
+        # 这里原样落进 detail —— 前端 / 后续「按 git 报错重试」能拿到真正的失败原因
+        # （例如 `patch failed: src/x.py:1`），而不是只有一句笼统的「Patch 应用失败」。
         await _fail(reason, str(exc), 'Patch 应用失败', 422)
 
 @api.post('/api/tasks/{task_id}/patches/{patch_id}/tests', response_model=TestRunResponse, status_code=201)
