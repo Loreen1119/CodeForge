@@ -203,8 +203,35 @@ def _build_user_prompt(ctx: PatchGenerationContext, retry_reason: str | None = N
         lines.append(cc.snippet)
         lines.append("```")
     if retry_reason:
-        lines.append(f"\n# Previous attempt failed\n{retry_reason}\nPlease produce a corrected unified diff.")
+        lines.append(
+            f"\n# Previous attempt failed\n{retry_reason}\n"
+            "重新生成时必须满足：\n"
+            "- 每一行上下文都要从上面的 Source context 原样复制，不改写、不补全、不臆造；\n"
+            "- 每个 hunk 头声明的行数必须与该 hunk 内实际的行数一致，且 hunk 内必须真有增删行；\n"
+            "- 只允许在 Source context 覆盖的行区间内改动；需要的行没被提供时，用已提供的行做最小改动。\n"
+            "请输出修正后的 unified diff。"
+        )
     return "\n".join(lines)
+
+
+def _self_check(ctx: PatchGenerationContext, diff: str, attempt: int, notes: list[str]) -> str:
+    """生成期自检：先在临时 worktree 上试打一次，不可应用就把 git 报错回喂重试。
+
+    为什么放在生成器而不是 apply 接口：跑批与产品都走同一个生成器，而 apply 是下游；
+    等 apply 才发现问题，模型已经没有第二次机会。ctx.git_root 为空时完全跳过（测试、Fake 生成器）。
+    """
+    git_root = getattr(ctx, 'git_root', '') or ''
+    if not git_root:
+        return ''
+    try:
+        from worktree_service import probe_apply
+        probe = probe_apply(git_root, ctx.base_commit, diff, tag=f"t{ctx.task_id}-{attempt}")
+    except Exception:  # 自检设施故障绝不能阻断生成
+        return ''
+    if probe.get('ok'):
+        return ''
+    notes.append(f"第 {attempt + 1} 次生成的补丁无法应用，已带 git 报错与真实上下文重试")
+    return probe.get('hint') or probe.get('error') or '补丁无法应用，请重新生成'
 
 
 def _extract_diff(text: str) -> str:
@@ -287,6 +314,11 @@ class LLMPatchGenerator:
             {"role": "user", "content": _build_user_prompt(ctx)},
         ]
         last_reason = None
+        self_check_notes: list[str] = []
+        # 最后一次「解析成功但自检没过」的补丁。自检连不过时**不能**退成 Fake：
+        # Fake 补丁会被判定为 generator_fallback 整条剔除，等于把「补丁打不上」这种
+        # 真实失败改写成「模型没产出」，可判定池会凭空缩水（实测一轮从 17 条掉到 6 条）。
+        best_unchecked: tuple[str, str, str] | None = None  # (diff, raw, prompt)
         for attempt in range(self.max_retries + 1):
             try:
                 raw = await self._call(messages)
@@ -296,11 +328,19 @@ class LLMPatchGenerator:
                 continue
             diff = _extract_diff(raw)
             if diff:
+                # 生成期自检：跑一轮 `git apply`，不可应用就把真实文件内容 + git 报错回喂重试。
+                # 第四轮实测证明「模型在没看过的行区间凭记忆写上下文」才是 apply 失败的主因。
+                hint = _self_check(ctx, diff, attempt, self_check_notes)
+                if hint:
+                    best_unchecked = (diff, raw, messages[-1]['content'])
+                    last_reason = hint
+                    messages[-1] = {"role": "user", "content": _build_user_prompt(ctx, retry_reason=hint)}
+                    continue
                 return PatchGenerationResult(
                     diff=diff,
                     rationale=f'LLM 生成补丁（{self.model}，第 {attempt + 1} 次尝试）',
                     changed_files=_changed_files(diff),
-                    risk_notes=[],
+                    risk_notes=list(self_check_notes),
                     provider='deepseek',
                     model=self.model,
                     prompt_digest=_digest(messages[-1]['content']),
@@ -309,8 +349,23 @@ class LLMPatchGenerator:
             last_reason = 'LLM 返回内容无法解析为有效的 unified diff'
             messages[-1] = {"role": "user", "content": _build_user_prompt(ctx, retry_reason=last_reason)}
 
+        if best_unchecked is not None:
+            # 模型确实产出了 diff，只是自检没过 —— 如实交出去，可应用性由下游 apply 判定。
+            diff, raw, prompt = best_unchecked
+            return PatchGenerationResult(
+                diff=diff,
+                rationale=f'LLM 生成补丁（{self.model}，自检未通过，返回最后一版）',
+                changed_files=_changed_files(diff),
+                risk_notes=list(self_check_notes) + ['自检多次未通过，返回最后一版补丁'],
+                provider='deepseek',
+                model=self.model,
+                prompt_digest=_digest(prompt),
+                response_digest=_digest(raw),
+            )
+
         res = await self.fallback.generate(ctx)
         res.risk_notes.append(f"LLM 生成失败（{last_reason}），已回退到 Fake 补丁")
+        res.risk_notes.extend(self_check_notes)
         res.provider = 'fake(fallback)'
         return res
 

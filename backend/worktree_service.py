@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 # `git worktree remove --force` 要删整棵工作树，大仓（三千+ 文件）在 Windows 上
@@ -119,3 +121,97 @@ def remove_worktree(repository_root: str, task_id: int) -> None:
         raise WorktreeError(result.stderr.strip() or "无法清理 Git Worktree")
     if target.exists():
         shutil.rmtree(target)
+
+
+# ── 生成期自检（试打补丁）────────────────────────────────────────────────────
+# 背景（2026-10-18 第四轮实测）：apply 失败的根因不是 hunk 行数算错（--recount 早就兜住了），
+# 而是模型在**它没被提供过的行区间**凭记忆写上下文 —— 实测 13073 在 structures.py:55 处
+# 编了一个 hunk，而检索给它的片段在 line 400 附近。放大检索窗口到 61 行完全无效。
+# 唯一对症的做法：生成后先试打一次，失败就按 git 指出的「文件:行号」回读真实内容，连报错
+# 一起回喂重试。自检用独立的临时 worktree，不占任务 worktree 的名字、不留痕。
+_PROBE_LOCATION_RE = re.compile(r"patch failed: (?P<path>[^:\n]+):(?P<line>\d+)")
+PROBE_REGION_LINES = 60
+PROBE_HINT_LIMIT = 8000
+
+
+def _pick_probe_stderr(stderr_by_mode: dict[str, str]) -> str:
+    """挑信息量最大的一档报错：能指出「文件:行号」的优先，其次 recount（能解析的那种）。"""
+    for mode in ("recount", "recount+relaxed", "strict", "relaxed"):
+        text = stderr_by_mode.get(mode) or ""
+        if _PROBE_LOCATION_RE.search(text):
+            return text
+    for mode in ("recount", "strict"):
+        if stderr_by_mode.get(mode):
+            return stderr_by_mode[mode]
+    return next((value for value in stderr_by_mode.values() if value), "")
+
+
+def _read_failed_region(worktree: Path, stderr: str) -> str:
+    """按 git 报的「文件:行号」回读真实内容，给模型一段可以逐字复制的素材。"""
+    match = _PROBE_LOCATION_RE.search(stderr or "")
+    if not match:
+        return ""
+    relative = match.group("path").strip().strip('"')
+    try:
+        line = int(match.group("line"))
+    except (TypeError, ValueError):
+        return ""
+    candidate = (worktree / relative).resolve()
+    try:
+        candidate.relative_to(worktree.resolve())
+    except ValueError:
+        return ""
+    if not candidate.is_file():
+        return ""
+    try:
+        lines = candidate.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    start = max(1, line - PROBE_REGION_LINES)
+    end = min(len(lines), line + PROBE_REGION_LINES)
+    body = "\n".join(f"{index:>5} | {lines[index - 1]}" for index in range(start, end + 1))
+    return (
+        f"### {relative} 第 {start}-{end} 行的真实内容（行号 | 原文）\n"
+        f"```\n{body}\n```\n"
+        "补丁里出现的上下文行必须与上面这些行逐字一致。"
+    )
+
+
+def probe_apply(repository_root: str, base_commit: str | None, diff: str, tag: str = "probe") -> dict:
+    """在临时 worktree 上试打一次补丁（生成期自检），返回诊断结果。
+
+    返回 {"ok", "mode", "error", "hint"}：
+    - ok=True 表示补丁可应用（或自检设施本身不可用 —— 设施故障绝不能阻断生成）
+    - error 是 git 的原始 stderr（优先取能指出文件行号的那一档）
+    - hint 是可直接拼进重试提示的素材：git 报错 + 失败位置的真实文件内容
+    """
+    root = Path(repository_root).resolve()
+    result = {"ok": True, "mode": None, "error": "", "hint": ""}
+    if not diff.strip() or not root.is_dir():
+        return result
+    target = root / ".codeforge" / "probes" / f"probe-{tag}-{os.getpid()}-{int(time.time() * 1000)}"
+    created = _run(root, "worktree", "add", "--detach", str(target), base_commit or "HEAD")
+    if created.returncode != 0:
+        # 自检设施不可用（提交不存在 / worktree 冲突）时按通过处理，绝不因此阻断生成。
+        result["error"] = created.stderr.strip()[:200]
+        return result
+    try:
+        try:
+            result["mode"] = apply_patch(target, diff)
+        except WorktreeError as exc:
+            detail = exc.args[1] if len(exc.args) > 1 and isinstance(exc.args[1], dict) else {}
+            by_mode = detail.get("git_stderr_by_mode") or {}
+            stderr = _pick_probe_stderr(by_mode) if by_mode else str(exc)
+            result.update(ok=False, error=stderr)
+            region = _read_failed_region(target, stderr)
+            hint = f"git 报错：\n{stderr}"
+            if region:
+                hint = f"{hint}\n\n{region}"
+            result["hint"] = hint[:PROBE_HINT_LIMIT]
+    finally:
+        _run(root, "worktree", "remove", "--force", str(target), timeout=REMOVE_TIMEOUT_S)
+        if target.exists():
+            shutil.rmtree(target, ignore_errors=True)
+        _run(root, "worktree", "prune")
+    return result
+

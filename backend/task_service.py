@@ -452,7 +452,8 @@ async def run_generate_patch(task_id: int) -> None:
             code_context=code_context,
             base_commit=plan_dict.get('base_commit'),
             patch_revision=1,
-            reviewer_feedback=task_dict.get('reviewer_feedback')
+            reviewer_feedback=task_dict.get('reviewer_feedback'),
+            git_root=info['git_root']
         )
 
         # 模板决定走哪条生成路径。

@@ -209,6 +209,10 @@ class PatchGenerationContext(BaseModel):
     base_commit: str | None
     patch_revision: int
     reviewer_feedback: str | None
+    # 仓库根目录：有值时生成器会在返回前试打一次补丁（生成期自检），
+    # 不可应用就把 git 报错 + 失败位置的真实文件内容回喂重试。
+    # 留空则完全跳过自检（测试与 Fake 生成器不受影响）。
+    git_root: str = ''
 
 class PatchGenerationResult(BaseModel):
     diff: str
