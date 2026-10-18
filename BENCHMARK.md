@@ -94,11 +94,11 @@
 | # | 仓库 | 检索 | 可应用 [I] | 通过 [J] | 回归 | 失败归因 | 备注 |
 |---|---|---|---|---|---|---|---|
 | 1 | pytest-dev/pytest #13073 | 命中 | 是 | 否 | 0 | 方案错 | 一次过；`recount`；补丁只剩 1 行删除（去掉 `NotSetType` 导入），能打上但没修对 |
-| 2 | pytest-dev/pytest #13370 | 结构性 | 是 | 否 | 0 | 检索失败 | 重试后；`strict`；检索 7 条全无关，补丁能打上但 F2P 0/8 |
+| 2 | pytest-dev/pytest #13370 | 结构性 | 是 | 否 | 0 | 检索失败 | 重试后；`strict`；预期文件在 base 树无词可命，补丁能打上但 F2P 0/8 |
 | 3 | pytest-dev/pytest #13745 | 命中 | 是 | 否 | 0 | 方案错 | 重试后；`recount`；F2P 0/5 |
 | 4 | pytest-dev/pytest #14331 | 排序 | 是 | 否 | 0 | 检索失败 | 重试后；`strict`；预期 `pathlib.py` 未进结果，F2P 0/10 |
 | 5 | pytest-dev/pytest #14463 | 命中 | 是 | 否 | 0 | 方案错 | 一次过；`recount+relaxed`；F2P 0/1 |
-| 6 | pytest-dev/pytest #14645 | 结构性 | 否 | 否 | 0 | 检索失败 | 检索只给 2 条无关文件；四档降级链全失败（本轮唯一一条 apply 不上的真模型产出） |
+| 6 | pytest-dev/pytest #14645 | 结构性 | 否 | 否 | 0 | 检索失败 | 预期文件在 base 树无词可命；四档降级链全失败（本轮唯一一条 apply 不上的真模型产出） |
 | 7 | pytest-dev/pytest #14670 | 命中 | 是 | 否 | 0 | 方案错 | 重试后；`strict`；F2P 0/2 |
 | 8 | pytest-dev/pytest #15032 | 排序 | 否 | 否 | 0 | 检索失败 | 生成期被产品校验拒（`---`/`+++` 路径不一致），diff 未落盘 |
 | 9 | pytest-dev/pytest #15040 | 命中 | 是 | 否 | 0 | 方案错 | 重试后；`recount+relaxed`；F2P 0/2 |
