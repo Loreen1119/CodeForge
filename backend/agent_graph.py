@@ -186,7 +186,10 @@ def run_code_search_node(state: AgentState, repository_root: str, allowed_source
     per_keyword_max_results = params.get("per_keyword_max_results", 4)
     result_limit = params.get("search_result_limit", 8)
     contexts: list[CodeContext] = []
-    seen: set[tuple[str, int]] = set()
+    # 按「文件路径」去重，而不是 (path, matched_line)：同一文件里多行命中同一关键词时，
+    # 旧实现会把这些行当成不同结果占满 top-8（16418 的 _api.py 有 4 行 "opentelemetry" 就占 4 槽），
+    # 真正该改的同名/相邻文件（_asgi.py / _runtime.py）根本没机会进结果 —— 18 条里 8 条「排序压制」的根因。
+    seen: set[str] = set()
     trace: list[dict] = []
     # 模板锚点优先于关键词检索：显式指定的文件 / 符号位置先入结果，剩余预算再留给关键词。
     anchor_paths = [item for item in params.get("anchor_paths", []) if item]
@@ -199,7 +202,7 @@ def run_code_search_node(state: AgentState, repository_root: str, allowed_source
                 candidate = item["path"].replace("\\", "/")
                 if candidate != normalized and not candidate.endswith("/" + normalized):
                     continue
-                key = (item["path"], item["matched_line"])
+                key = item["path"]
                 if key in seen:
                     continue
                 seen.add(key)
@@ -210,7 +213,7 @@ def run_code_search_node(state: AgentState, repository_root: str, allowed_source
                 break
         for symbol in anchor_symbols:
             for item in search_repository(repository_root, "", symbol=symbol, allowed_source_roots=allowed_source_roots, max_results=per_keyword_max_results):
-                key = (item["path"], item["matched_line"])
+                key = item["path"]
                 if key in seen:
                     continue
                 seen.add(key)
@@ -241,7 +244,7 @@ def run_code_search_node(state: AgentState, repository_root: str, allowed_source
         if len(contexts) >= result_limit:
             break
         for item in search_repository(repository_root, keyword, allowed_source_roots=allowed_source_roots, max_results=per_keyword_max_results):
-            key = (item["path"], item["matched_line"])
+            key = item["path"]
             if key in seen:
                 continue
             seen.add(key)
@@ -255,7 +258,7 @@ def run_code_search_node(state: AgentState, repository_root: str, allowed_source
     if not contexts and path_tokens:
         for token in path_tokens:
             for item in search_repository(repository_root, "", filename=token.split('/')[-1], allowed_source_roots=allowed_source_roots, max_results=8):
-                key=(item['path'],item['matched_line'])
+                key=item['path']
                 if key not in seen:
                     seen.add(key); contexts.append(CodeContext.model_validate(item))
         trace.append({"strategy":"path_tokens","hits":len(contexts),"tokens":path_tokens})

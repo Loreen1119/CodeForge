@@ -8,15 +8,35 @@ EXCLUDED_DIRS = {".git", ".codeforge", "node_modules", ".venv", "venv", "__pycac
 SOURCE_SUFFIXES = {".py", ".ts", ".tsx", ".js", ".jsx"}
 SYMBOL_RE = re.compile(r"^\s*(?:export\s+(?:default\s+)?)?(?:async\s+)?(?:def|class|function|interface|type|const|let|var)\s+([A-Za-z_$][\w$]*)")
 
+# 关键词命中权重：正文命中 200，文件名/目录名也命中则加权到 280。
+# 依据（2026-10-17 评测实测）：原实现把全部正文命中一律记 200，排序退化成「按路径字典序」，
+# 于是同名文件冲突里 `fastapi/telemetry.py` 永远压过真正该改的 `fastapi/telemetry/_asgi.py`，
+# `mapping` 这类词的 top-4 也被字典序更靠前的无关文件占满 —— 18 条里 8 条属这种「文件里有词、
+# 但没进 top-8」的排序压制。加权只动 keyword 档（200 → 280），不动 symbol 400 / filename 100 的优先级。
+KEYWORD_SCORE = 200
+KEYWORD_NAME_HIT_SCORE = 280
+
 
 def _in_allowed(path: Path, roots: list[Path]) -> bool:
     return bool(roots) and any(path == root or root in path.parents for root in roots)
 
 
-def _candidate(*, path: str, lines: list[str], index: int, symbol: str | None, match_type: str, score: int, context_lines: int) -> dict:
+def _candidate(*, path: str, lines: list[str], index: int, symbol: str | None, match_type: str, score: int, context_lines: int, depth: int = 0) -> dict:
     start = max(0, index - context_lines)
     end = min(len(lines), index + context_lines + 1)
-    return {"path": path, "line_start": start + 1, "line_end": end, "matched_line": index + 1, "symbol": symbol, "snippet": "\n".join(lines[start:end]), "match_type": match_type, "_score": score}
+    return {"path": path, "line_start": start + 1, "line_end": end, "matched_line": index + 1, "symbol": symbol, "snippet": "\n".join(lines[start:end]), "match_type": match_type, "_score": score, "_depth": depth}
+
+
+def _name_hit(relative: str, needle: str) -> bool:
+    """关键词是否也是这个文件「名字」的一部分（文件名 stem 或某个目录段正好等于它）。
+
+    这是同名文件冲突的判据：`telemetry` 对 `fastapi/telemetry.py`（stem 命中）和
+    `fastapi/telemetry/_asgi.py`（目录段命中）都成立，于是靠路径深度分出主次。
+    """
+    if not needle:
+        return False
+    segments = relative.casefold().split("/")
+    return needle in Path(segments[-1]).stem.casefold() or any(seg == needle for seg in segments[:-1])
 
 
 def search_repository(
@@ -56,9 +76,11 @@ def search_repository(
         if not _in_allowed(path, allowed):
             continue
         relative = path.relative_to(root).as_posix()
+        depth = relative.count("/")
         filename_match = bool(requested_filename and (requested_filename in path.name.casefold() or requested_filename in relative.casefold()))
         if requested_filename and not filename_match:
             continue
+        name_hit = _name_hit(relative, needle)
         try:
             lines = path.read_text(encoding="utf-8").splitlines()
         except (OSError, UnicodeError):
@@ -80,15 +102,16 @@ def search_repository(
             else:
                 text_match = False
             if symbol_match:
-                file_results.append(_candidate(path=relative, lines=lines, index=index, symbol=found_symbol.group(1), match_type="symbol", score=400, context_lines=context_lines))
+                file_results.append(_candidate(path=relative, lines=lines, index=index, symbol=found_symbol.group(1), match_type="symbol", score=400, context_lines=context_lines, depth=depth))
             elif text_match:
-                file_results.append(_candidate(path=relative, lines=lines, index=index, symbol=enclosing_symbol, match_type="keyword", score=200, context_lines=context_lines))
+                file_results.append(_candidate(path=relative, lines=lines, index=index, symbol=enclosing_symbol, match_type="keyword", score=KEYWORD_NAME_HIT_SCORE if name_hit else KEYWORD_SCORE, context_lines=context_lines, depth=depth))
         if filename_match and not file_results:
-            file_results.append(_candidate(path=relative, lines=lines, index=0, symbol=None, match_type="filename", score=100, context_lines=context_lines))
+            file_results.append(_candidate(path=relative, lines=lines, index=0, symbol=None, match_type="filename", score=100, context_lines=context_lines, depth=depth))
         results.extend(file_results)
-    results.sort(key=lambda item: (-item["_score"], item["path"], item["matched_line"]))
+    results.sort(key=lambda item: (-item["_score"], -item["_depth"], item["path"], item["matched_line"]))
     for item in results:
         item.pop("_score")
+        item.pop("_depth")
     return results[:max_results]
 
 

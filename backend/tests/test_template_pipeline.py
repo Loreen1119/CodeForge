@@ -157,11 +157,17 @@ async def test_anchor_paths_supply_context_when_keywords_miss(monkeypatch, tmp_p
 
 
 def test_search_budget_and_result_limit_come_from_template(tmp_path):
-    """检索预算三项参数直接决定命中数量，缺省值与改造前的字面量一致。"""
+    """检索预算三项参数直接决定命中数量，缺省值与改造前的字面量一致。
+
+    自 2026-10-17 起检索按「文件」去重（同文件多行命中同一关键词只保留一条），
+    所以用「不同文件」而非「同文件多行」来构造命中数，避免把文件去重误当成 bug。
+    """
     source = tmp_path / "src"
     source.mkdir()
-    lines = [f"alpha_{index} = {index}" for index in range(5)] + [f"beta_{index} = {index}" for index in range(5)]
-    (source / "budget.py").write_text("\n".join(lines), encoding="utf-8")
+    for idx in range(4):
+        (source / f"alpha_{idx}.py").write_text(f"alpha_{idx} = {idx}\n", encoding="utf-8")
+    for idx in range(4):
+        (source / f"beta_{idx}.py").write_text(f"beta_{idx} = {idx}\n", encoding="utf-8")
 
     def _search(**params):
         state = {"task_id": 1, "repository_id": 1, "issue_title": "alpha beta", "issue_body": "alpha beta"}
@@ -170,9 +176,9 @@ def test_search_budget_and_result_limit_come_from_template(tmp_path):
             state["template_params"] = params
         return run_code_search_node(state, str(tmp_path), ["src"])
 
-    assert len(_search()["code_context"]) == 8                      # 两个关键词各 4 条 = 缺省上限 8
+    assert len(_search()["code_context"]) == 8                      # 两个关键词各 4 个文件 = 缺省上限 8
     assert len(_search(search_keyword_budget=1)["code_context"]) == 4          # 只用第一个关键词
-    assert len(_search(per_keyword_max_results=1)["code_context"]) == 2        # 每词 1 条 × 两个关键词
+    assert len(_search(per_keyword_max_results=1)["code_context"]) == 2        # 每词 1 文件 × 两个关键词
     assert len(_search(per_keyword_max_results=1, search_result_limit=1)["code_context"]) == 1  # 总量再收
 
 
