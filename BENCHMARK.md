@@ -293,4 +293,18 @@ PYTHONPATH= backend/.venv/Scripts/python.exe <judge.py 路径> --out <汇总输�
 
 **结论**：整文件上下文只能救「正确文件已经在 top-3、只差看不到函数体」这一类，救不了「正确文件排在后面」。**真正的瓶颈是「选中正确文件/函数」，不是「看见多少行」**——这也解释了为什么第四轮把窗口放大到 61 行没有收益（§9.3 第 1 条）。因此不把「按函数切块」落进 `code_search`：预期每轮只多 1 条左右，而 token 已逼近 50K 上限（`16484` 靠截断才塞进 48.6K），且随时会被下一条反例吃掉。
 
-**遗留**：本轮补丁原文未落盘（脚本第一版只记增删行数），`15058` 的「5 增 1 删」无法逐行复核，只能靠「只改 `compat.py`、测试文件来自 `merge_commit`、模型没看过测试」保证不是作弊。脚本已加 `record["diff"]`，补跑单条可补齐原文。
+**补跑补齐（同日晚 23:00，单条重跑 `15058`）**：补丁原文已落盘，且**与上游修复等价**——
+
+```diff
+@@ -163,7 +163,7 @@
+         cls
+         and not isinstance(
+             inspect.getattr_static(cls, name, default=None), staticmethod
+         )
+-    ):
++    ) and not inspect.ismethod(function):
+```
+
+上游是在同一条件里新增一行 `and not inspect.ismethod(function)`（置于 `isinstance` 之前），模型把它并到 `isinstance` 之后——短路顺序不同、逻辑等价。补跑复现同一结果：`strict` 打上、F2P 1/1、P2P 241 条零回归（`242 passed / 1 skipped / 3 xfailed`），单次生成耗时 1.7 秒。也就是说这条不是「碰巧通过」，是**独立得出了与上游等价的修复**。
+
+**残留局限**：其余 4 条（`15133` / `16484` / `16470` / `14125`）的补丁原文仍未落盘（第一版脚本只记增删行数），脚本已加 `record["diff"]`，后续探针会带原文。
